@@ -1,9 +1,21 @@
 import { useCallback, useEffect, useState } from "react"
-import { ChevronLeft, ChevronRight, Eye, Loader2 } from "lucide-react"
+import { Eye, Loader2 } from "lucide-react"
 import { Link } from "react-router"
 import { Button } from "@/components/ui/button"
+import {
+  Pagination,
+  PaginationContent,
+  PaginationEllipsis,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination"
+import { usePersistedState } from "@/hooks/use-persisted-state"
 import { api, ApiError } from "@/lib/api"
+import { peekCache, writeCache } from "@/lib/cache"
 import { formatDateTime, formatRupiah } from "@/lib/format"
+import { pageItems } from "@/lib/pagination"
 import type { Order, PageMeta } from "@/lib/types"
 import { cn } from "cn"
 
@@ -12,18 +24,28 @@ interface OrderIndexResponse {
   meta: PageMeta
 }
 
+interface OrdersFilters {
+  status: string
+  date: string
+}
+
 const SELECT_CLASSES =
   "flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-[color,box-shadow] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
 
 export default function OrdersPage() {
-  const [orders, setOrders] = useState<Order[]>([])
-  const [meta, setMeta] = useState<PageMeta | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [listError, setListError] = useState<string | null>(null)
+  const [filters, setFilters] = usePersistedState<OrdersFilters>("nara:orders:filters", {
+    status: "",
+    date: "",
+  })
+  const [page, setPage] = usePersistedState<number>("nara:orders:page", 1)
+  const { status, date } = filters
 
-  const [status, setStatus] = useState("")
-  const [date, setDate] = useState("")
-  const [page, setPage] = useState(1)
+  const cacheKey = `orders:${status}:${date}:${page}`
+  const [cached] = useState(() => peekCache<OrderIndexResponse>(cacheKey))
+  const [orders, setOrders] = useState<Order[]>(() => cached?.data ?? [])
+  const [meta, setMeta] = useState<PageMeta | null>(() => cached?.meta ?? null)
+  const [loading, setLoading] = useState(() => cached === null)
+  const [listError, setListError] = useState<string | null>(null)
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -41,6 +63,11 @@ export default function OrdersPage() {
           setOrders(response.data)
           setMeta(response.meta)
           setListError(null)
+          writeCache(cacheKey, response)
+
+          if (response.meta.last_page < page) {
+            setPage(response.meta.last_page)
+          }
         })
         .catch((err: unknown) => {
           if (err instanceof ApiError && err.status !== 0) {
@@ -49,7 +76,7 @@ export default function OrdersPage() {
         })
         .finally(() => setLoading(false))
     },
-    [status, date, page],
+    [cacheKey, page, setPage, status, date],
   )
 
   useEffect(() => {
@@ -58,6 +85,27 @@ export default function OrdersPage() {
 
     return () => controller.abort()
   }, [load])
+
+  function handleStatusChange(value: string) {
+    setFilters({ ...filters, status: value })
+    setPage(1)
+  }
+
+  function handleDateChange(value: string) {
+    setFilters({ ...filters, date: value })
+    setPage(1)
+  }
+
+  function handleReset() {
+    setFilters({ status: "", date: "" })
+    setPage(1)
+  }
+
+  function goToPage(target: number) {
+    if (target >= 1 && (!meta || target <= meta.last_page)) {
+      setPage(target)
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -69,39 +117,26 @@ export default function OrdersPage() {
       <div className="flex flex-wrap items-center gap-2">
         <select
           value={status}
-          onChange={(event) => {
-            setStatus(event.target.value)
-            setPage(1)
-          }}
+          onChange={(event) => handleStatusChange(event.target.value)}
           className={SELECT_CLASSES}
           aria-label="Filter status"
         >
           <option value="">Semua status</option>
           <option value="pending">Belum bayar</option>
           <option value="paid">Lunas</option>
+          <option value="cancelled">Dibatalkan</option>
         </select>
 
         <input
           type="date"
           value={date}
-          onChange={(event) => {
-            setDate(event.target.value)
-            setPage(1)
-          }}
+          onChange={(event) => handleDateChange(event.target.value)}
           className={cn(SELECT_CLASSES, "text-muted-foreground")}
           aria-label="Filter tanggal"
         />
 
         {(status || date) && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setStatus("")
-              setDate("")
-              setPage(1)
-            }}
-          >
+          <Button variant="ghost" size="sm" onClick={handleReset}>
             Atur ulang
           </Button>
         )}
@@ -142,10 +177,18 @@ export default function OrdersPage() {
                       <span
                         className={cn(
                           "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
-                          order.status === "paid" ? "bg-primary/10 text-primary" : "bg-destructive/10 text-destructive",
+                          order.status === "paid"
+                            ? "bg-primary/10 text-primary"
+                            : order.status === "cancelled"
+                              ? "bg-muted text-muted-foreground"
+                              : "bg-destructive/10 text-destructive",
                         )}
                       >
-                        {order.status === "paid" ? "Lunas" : "Belum bayar"}
+                        {order.status === "paid"
+                          ? "Lunas"
+                          : order.status === "cancelled"
+                            ? "Dibatalkan"
+                            : "Belum bayar"}
                       </span>
                     </td>
                     <td className="px-4 py-2.5 text-right font-medium text-foreground">{formatRupiah(order.total)}</td>
@@ -167,18 +210,61 @@ export default function OrdersPage() {
       </div>
 
       {meta && meta.last_page > 1 && (
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>
-            <ChevronLeft />
-            Sebelumnya
-          </Button>
-          <span>
+        <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-between">
+          <span className="text-sm text-muted-foreground">
             Halaman {meta.current_page} dari {meta.last_page} &middot; {meta.total} pesanan
           </span>
-          <Button variant="outline" size="sm" disabled={page >= meta.last_page} onClick={() => setPage((current) => current + 1)}>
-            Berikutnya
-            <ChevronRight />
-          </Button>
+
+          <Pagination>
+            <PaginationContent>
+              <PaginationItem>
+                <PaginationPrevious
+                  href="#"
+                  text="Sebelumnya"
+                  aria-disabled={page <= 1}
+                  className={cn(page <= 1 && "pointer-events-none opacity-50")}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    goToPage(page - 1)
+                  }}
+                />
+              </PaginationItem>
+
+              {pageItems(page, meta.last_page).map((item, index) =>
+                item === "ellipsis" ? (
+                  <PaginationItem key={`gap-${index}`}>
+                    <PaginationEllipsis />
+                  </PaginationItem>
+                ) : (
+                  <PaginationItem key={item}>
+                    <PaginationLink
+                      href="#"
+                      isActive={item === page}
+                      onClick={(event) => {
+                        event.preventDefault()
+                        goToPage(item)
+                      }}
+                    >
+                      {item}
+                    </PaginationLink>
+                  </PaginationItem>
+                ),
+              )}
+
+              <PaginationItem>
+                <PaginationNext
+                  href="#"
+                  text="Berikutnya"
+                  aria-disabled={page >= meta.last_page}
+                  className={cn(page >= meta.last_page && "pointer-events-none opacity-50")}
+                  onClick={(event) => {
+                    event.preventDefault()
+                    goToPage(page + 1)
+                  }}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
         </div>
       )}
     </div>

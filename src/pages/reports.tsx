@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { ChartColumn, Loader2, RefreshCw, TrendingUp, Users } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { ErrorAlert } from "@/components/error-alert"
 import { api, ApiError } from "@/lib/api"
 import { formatRupiah } from "@/lib/format"
 
@@ -69,11 +70,7 @@ export default function ReportsPage() {
   }
 
   if (error || !report) {
-    return (
-      <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-        {error ?? "Gagal memuat laporan."}
-      </div>
-    )
+    return <ErrorAlert message={error ?? "Gagal memuat laporan."} />
   }
 
   const cards = [

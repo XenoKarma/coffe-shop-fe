@@ -8,6 +8,7 @@ import ImageWallpaper from "@/assets/images/wallpaper.jpg"
 import { Coffee } from "lucide-react"
 import { Label } from "@/components/ui/label"
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter} from "@/components/ui/card"
+import { ErrorAlert } from "@/components/error-alert"
 
 export default function LoginPage() {
   const { login, user } = useAuth()
@@ -116,14 +117,7 @@ export default function LoginPage() {
               )}
             </div>
 
-            {error && (
-              <div
-                role="alert"
-                className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
-              >
-                {error}
-              </div>
-            )}
+            <ErrorAlert message={error} className="border-destructive/30 bg-destructive/10" />
 
             <Button
               type="submit"

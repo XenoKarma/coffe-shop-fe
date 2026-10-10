@@ -44,7 +44,7 @@ export interface OrderItem {
 export interface Order {
   id: number
   order_number: string
-  status: "pending" | "paid"
+  status: "pending" | "paid" | "cancelled"
   subtotal: number
   discount: number
   tax: number

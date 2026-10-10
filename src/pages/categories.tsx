@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState, type FormEvent } from "react"
 import { Loader2, Pencil, Plus, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ConfirmDialog } from "@/components/confirm-dialog"
+import { ErrorAlert } from "@/components/error-alert"
 import { api, ApiError } from "@/lib/api"
 import type { Category } from "@/lib/types"
 
@@ -26,6 +28,7 @@ export default function CategoriesPage() {
 
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Category | null>(null)
 
   const load = useCallback((signal?: AbortSignal) => {
     return api
@@ -109,10 +112,6 @@ export default function CategoriesPage() {
   }
 
   async function handleDelete(category: Category) {
-    if (!window.confirm(`Hapus kategori "${category.name}"?`)) {
-      return
-    }
-
     setDeletingId(category.id)
     setDeleteError(null)
 
@@ -124,6 +123,10 @@ export default function CategoriesPage() {
     } finally {
       setDeletingId(null)
     }
+  }
+
+  function confirmDelete() {
+    if (deleteTarget) void handleDelete(deleteTarget)
   }
 
   return (
@@ -179,11 +182,7 @@ export default function CategoriesPage() {
             />
           </div>
 
-          {formError && (
-            <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {formError}
-            </div>
-          )}
+          <ErrorAlert message={formError} />
 
           <div className="flex gap-2">
             <Button type="submit" disabled={saving}>
@@ -197,11 +196,7 @@ export default function CategoriesPage() {
         </form>
       )}
 
-      {deleteError && (
-        <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {deleteError}
-        </div>
-      )}
+      <ErrorAlert message={deleteError} />
 
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
         {loading ? (
@@ -238,7 +233,7 @@ export default function CategoriesPage() {
                         <Button
                           variant="destructive"
                           size="icon-sm"
-                          onClick={() => void handleDelete(category)}
+                          onClick={() => setDeleteTarget(category)}
                           disabled={deletingId === category.id}
                           aria-label={`Hapus ${category.name}`}
                         >
@@ -253,6 +248,17 @@ export default function CategoriesPage() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null)
+        }}
+        title="Hapus kategori?"
+        description={`Kategori "${deleteTarget?.name ?? ""}" akan dihapus permanen.`}
+        confirmLabel="Hapus"
+        onConfirm={confirmDelete}
+      />
     </div>
   )
 }

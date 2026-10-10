@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { ArrowLeft, Banknote, Loader2, Receipt } from "lucide-react"
 import { Link, useParams } from "react-router"
+import { ErrorAlert } from "@/components/error-alert"
 import { api, ApiError } from "@/lib/api"
 import { formatDateTimeLong, formatRupiah } from "@/lib/format"
 import type { Order } from "@/lib/types"
@@ -53,9 +54,7 @@ export default function OrderDetailPage() {
           <ArrowLeft className="size-4" />
           Kembali ke riwayat
         </Link>
-        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error ?? "Terjadi kesalahan."}
-        </div>
+        <ErrorAlert message={error ?? "Terjadi kesalahan."} />
       </div>
     )
   }
@@ -81,10 +80,18 @@ export default function OrderDetailPage() {
           <span
             className={cn(
               "inline-flex rounded-full px-2.5 py-1 text-xs font-medium",
-              order.status === "paid" ? "bg-primary/10 text-primary" : "bg-destructive/10 text-destructive",
+              order.status === "paid"
+                ? "bg-primary/10 text-primary"
+                : order.status === "cancelled"
+                  ? "bg-muted text-muted-foreground"
+                  : "bg-destructive/10 text-destructive",
             )}
           >
-            {order.status === "paid" ? "Lunas" : "Belum bayar"}
+            {order.status === "paid"
+              ? "Lunas"
+              : order.status === "cancelled"
+                ? "Dibatalkan"
+                : "Belum bayar"}
           </span>
         </div>
 
@@ -159,6 +166,10 @@ export default function OrderDetailPage() {
               </div>
             )}
           </dl>
+        </div>
+      ) : order.status === "cancelled" ? (
+        <div className="rounded-xl border border-dashed border-border bg-muted/30 p-4 text-center text-sm text-muted-foreground">
+          Pesanan ini dibatalkan — tidak perlu pembayaran.
         </div>
       ) : (
         <div className="rounded-xl border border-dashed border-border bg-muted/30 p-4 text-center text-sm text-muted-foreground">

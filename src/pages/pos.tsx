@@ -11,7 +11,11 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ConfirmDialog } from "@/components/confirm-dialog"
+import { ErrorAlert } from "@/components/error-alert"
+import { usePersistedState } from "@/hooks/use-persisted-state"
 import { api, ApiError } from "@/lib/api"
+import { isCacheFresh, peekCache, writeCache } from "@/lib/cache"
 import { formatRupiah } from "@/lib/format"
 import type { Order, PageMeta, Product } from "@/lib/types"
 import { cn } from "cn"
@@ -21,48 +25,70 @@ interface ProductIndexResponse {
   meta: PageMeta
 }
 
+interface MenuCache {
+  products: Product[]
+  meta: PageMeta | null
+}
+
 interface CartLine {
   product: Product
   qty: number
 }
 
+const MENU_CACHE = "pos:menu"
+
 export default function PosPage() {
-  const [products, setProducts] = useState<Product[]>([])
-  const [meta, setMeta] = useState<PageMeta | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [menuCache] = useState(() => peekCache<MenuCache>(MENU_CACHE))
+  const [hadCache] = useState(() => menuCache !== null)
+  const [products, setProducts] = useState<Product[]>(() => menuCache?.products ?? [])
+  const [meta, setMeta] = useState<PageMeta | null>(() => menuCache?.meta ?? null)
+  const [loading, setLoading] = useState(() => menuCache === null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [productsError, setProductsError] = useState<string | null>(null)
 
-  const [lines, setLines] = useState<CartLine[]>([])
-  const [pendingOrder, setPendingOrder] = useState<Order | null>(null)
-  const [paidResult, setPaidResult] = useState<Order | null>(null)
-  const [received, setReceived] = useState("")
+  const [lines, setLines] = usePersistedState<CartLine[]>("nara:pos:lines", [])
+  const [pendingOrder, setPendingOrder] = usePersistedState<Order | null>("nara:pos:pending", null)
+  const [paidResult, setPaidResult] = usePersistedState<Order | null>("nara:pos:paid", null)
+  const [received, setReceived] = usePersistedState<string>("nara:pos:received", "")
+  const [editing, setEditing] = usePersistedState<boolean>("nara:pos:editing", false)
 
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
   const [paying, setPaying] = useState(false)
   const [payError, setPayError] = useState<string | null>(null)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false)
+  const [payDialogOpen, setPayDialogOpen] = useState(false)
 
-  const fetchPage = useCallback((pageToFetch: number, append: boolean, signal?: AbortSignal) => {
-    return api
-      .get<ProductIndexResponse>(`/products?is_active=1&page=${pageToFetch}`, { signal })
-      .then((response) => {
-        setProducts((current) => (append ? [...current, ...response.data] : response.data))
-        setMeta(response.meta)
-        setProductsError(null)
-      })
-      .catch((err: unknown) => {
-        if (err instanceof ApiError && err.status !== 0) {
-          setProductsError(err.message)
-        }
-      })
-      .finally(() => {
-        setLoading(false)
-        setLoadingMore(false)
-      })
-  }, [])
+  const fetchPage = useCallback(
+    (pageToFetch: number, append: boolean, signal?: AbortSignal) => {
+      return api
+        .get<ProductIndexResponse>(`/products?is_active=1&page=${pageToFetch}`, { signal })
+        .then((response) => {
+          const base = append ? (peekCache<MenuCache>(MENU_CACHE)?.products ?? []) : []
+          const next = append ? [...base, ...response.data] : response.data
+
+          setProducts(next)
+          setMeta(response.meta)
+          setProductsError(null)
+          writeCache(MENU_CACHE, { products: next, meta: response.meta })
+        })
+        .catch((err: unknown) => {
+          if (err instanceof ApiError && err.status !== 0 && !hadCache) {
+            setProductsError(err.message)
+          }
+        })
+        .finally(() => {
+          setLoading(false)
+          setLoadingMore(false)
+        })
+    },
+    [hadCache],
+  )
 
   useEffect(() => {
+    if (isCacheFresh(MENU_CACHE)) return
+
     const controller = new AbortController()
     void fetchPage(1, false, controller.signal)
 
@@ -70,7 +96,7 @@ export default function PosPage() {
   }, [fetchPage])
 
   const total = lines.reduce((sum, line) => sum + line.product.price * line.qty, 0)
-  const locked = pendingOrder !== null || paidResult !== null
+  const locked = paidResult !== null || (pendingOrder !== null && !editing)
   const receivedAmount = Number(received) || 0
   const changePreview = receivedAmount - total
 
@@ -141,10 +167,21 @@ export default function PosPage() {
     }
   }
 
-  async function handlePay(event: FormEvent<HTMLFormElement>) {
+  function handlePay(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
     if (!pendingOrder) return
 
-    event.preventDefault()
+    if (receivedAmount < total) {
+      setPayError("Uang diterima belum cukup.")
+      return
+    }
+
+    setPayDialogOpen(true)
+  }
+
+  async function confirmPay() {
+    if (!pendingOrder) return
+
     setPaying(true)
     setPayError(null)
 
@@ -161,11 +198,99 @@ export default function PosPage() {
     }
   }
 
+  function linesFromOrder(order: Order): CartLine[] {
+    return order.items.map((item) => {
+      const product = products.find((candidate) => candidate.id === item.product_id)
+
+      return {
+        product: product ?? {
+          id: item.product_id,
+          category_id: 0,
+          name: item.product_name,
+          sku: "",
+          description: null,
+          price: item.price,
+          image: null,
+          is_active: true,
+          category: null,
+        },
+        qty: item.quantity,
+      }
+    })
+  }
+
+  function startEditing() {
+    if (!pendingOrder) return
+
+    setLines(linesFromOrder(pendingOrder))
+    setEditing(true)
+    setCreateError(null)
+  }
+
+  function stopEditing() {
+    if (pendingOrder) setLines(linesFromOrder(pendingOrder))
+
+    setEditing(false)
+    setCreateError(null)
+  }
+
+  async function handleSaveChanges() {
+    if (!pendingOrder || lines.length === 0) return
+
+    setCreating(true)
+    setCreateError(null)
+
+    try {
+      const response = await api.put<{ data: Order }>(`/orders/${pendingOrder.id}`, {
+        body: {
+          items: lines.map((line) => ({ product_id: line.product.id, quantity: line.qty })),
+        },
+      })
+
+      setPendingOrder(response.data)
+      setEditing(false)
+      setReceived("")
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setCreateError(err.errors.items?.[0] ?? err.message)
+      } else {
+        setCreateError("Terjadi kesalahan tak terduga.")
+      }
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  function handleCancelOrder() {
+    setCancelDialogOpen(true)
+  }
+
+  function confirmCancelOrder() {
+    if (!pendingOrder) return
+
+    setCancelling(true)
+
+    api
+      .patch<{ data: Order }>(`/orders/${pendingOrder.id}/cancel`)
+      .then(() => resetTransaction())
+      .catch((err: unknown) => {
+        const message = err instanceof ApiError ? err.message : "Gagal membatalkan pesanan."
+
+        if (editing) {
+          setCreateError(message)
+        } else {
+          setPayError(message)
+        }
+      })
+      .finally(() => setCancelling(false))
+  }
+
   function resetTransaction() {
     setPaidResult(null)
     setPendingOrder(null)
     setLines([])
     setReceived("")
+    setEditing(false)
     setCreateError(null)
     setPayError(null)
   }
@@ -186,9 +311,7 @@ export default function PosPage() {
             Memuat menu...
           </div>
         ) : productsError ? (
-          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {productsError}
-          </div>
+          <ErrorAlert message={productsError} />
         ) : (
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
@@ -236,8 +359,14 @@ export default function PosPage() {
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold text-foreground">Pesanan</h2>
           {pendingOrder && !paidResult && (
-            <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground">
-              {pendingOrder.order_number}
+            <span
+              className={
+                editing
+                  ? "rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600"
+                  : "rounded-full bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground"
+              }
+            >
+              {editing ? `Ubah — ${pendingOrder.order_number}` : pendingOrder.order_number}
             </span>
           )}
         </div>
@@ -281,7 +410,9 @@ export default function PosPage() {
             {lines.length === 0 ? (
               <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
                 <ShoppingCart className="size-6" />
-                Belum ada pesanan. Klik menu di kiri.
+                {pendingOrder && editing
+                  ? "Semua item dihapus. Simpan perubahan atau batalkan pesanan."
+                  : "Belum ada pesanan. Klik menu di kiri."}
               </div>
             ) : (
               <ul className="space-y-3">
@@ -341,14 +472,36 @@ export default function PosPage() {
 
             {!pendingOrder ? (
               <div className="mt-3 space-y-2">
-                {createError && (
-                  <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    {createError}
-                  </div>
-                )}
+                <ErrorAlert message={createError} />
                 <Button className="w-full" onClick={() => void handleCheckout()} disabled={creating || lines.length === 0}>
                   {creating && <Loader2 className="animate-spin" />}
                   Buat &amp; Bayar
+                </Button>
+              </div>
+            ) : editing ? (
+              <div className="mt-3 space-y-2">
+                <ErrorAlert message={createError} />
+                <div className="flex gap-2">
+                  <Button
+                    className="flex-1"
+                    onClick={() => void handleSaveChanges()}
+                    disabled={creating || lines.length === 0}
+                  >
+                    {creating && <Loader2 className="animate-spin" />}
+                    Simpan Perubahan
+                  </Button>
+                  <Button variant="outline" onClick={stopEditing} disabled={creating}>
+                    Kembali
+                  </Button>
+                </div>
+                <Button
+                  variant="destructive"
+                  className="w-full"
+                  onClick={handleCancelOrder}
+                  disabled={cancelling || creating}
+                >
+                  {cancelling && <Loader2 className="animate-spin" />}
+                  Batalkan Pesanan
                 </Button>
               </div>
             ) : (
@@ -390,21 +543,72 @@ export default function PosPage() {
                   </span>
                 </div>
 
-                {payError && (
-                  <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                    {payError}
-                  </div>
-                )}
+                <ErrorAlert message={payError} />
 
                 <Button type="submit" className="w-full" disabled={paying || receivedAmount < total}>
                   {paying ? <Loader2 className="animate-spin" /> : <Banknote />}
                   Bayar
                 </Button>
+
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={startEditing}
+                    disabled={paying || cancelling}
+                  >
+                    Ubah Pesanan
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    className="flex-1"
+                    onClick={handleCancelOrder}
+                    disabled={cancelling || paying}
+                  >
+                    {cancelling && <Loader2 className="animate-spin" />}
+                    Batalkan
+                  </Button>
+                </div>
               </form>
             )}
           </div>
         )}
       </aside>
+
+      <ConfirmDialog
+        open={payDialogOpen}
+        onOpenChange={setPayDialogOpen}
+        title="Konfirmasi pembayaran"
+        description={`Bayar pesanan ${pendingOrder?.order_number ?? ""}? Setelah dibayar, pesanan tidak bisa diubah atau dibatalkan.`}
+        confirmLabel="Ya, Bayar"
+        onConfirm={() => void confirmPay()}
+      >
+        <div className="space-y-1.5 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Total</span>
+            <span className="font-medium text-foreground">{formatRupiah(total)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Uang diterima</span>
+            <span className="font-medium text-foreground">{formatRupiah(receivedAmount)}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Kembali</span>
+            <span className="font-semibold text-primary">{formatRupiah(receivedAmount - total)}</span>
+          </div>
+        </div>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={cancelDialogOpen}
+        onOpenChange={setCancelDialogOpen}
+        title="Batalkan pesanan?"
+        description={`Pesanan ${pendingOrder?.order_number ?? ""} akan ditandai sebagai dibatalkan dan tetap tersimpan di Riwayat.`}
+        confirmLabel="Ya, batalkan"
+        onConfirm={confirmCancelOrder}
+      />
     </div>
   )
 }

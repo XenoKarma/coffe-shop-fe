@@ -12,6 +12,8 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { ConfirmDialog } from "@/components/confirm-dialog"
+import { ErrorAlert } from "@/components/error-alert"
 import { api, ApiError } from "@/lib/api"
 import { formatRupiah } from "@/lib/format"
 import type { Category, PageMeta, Product } from "@/lib/types"
@@ -72,6 +74,7 @@ export default function ProductsPage() {
 
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Product | null>(null)
 
   const load = useCallback(
     (signal?: AbortSignal) => {
@@ -215,8 +218,6 @@ export default function ProductsPage() {
   }
 
   async function handleDelete(product: Product) {
-    if (!window.confirm(`Hapus produk "${product.name}"?`)) return
-
     setDeletingId(product.id)
     setActionError(null)
 
@@ -237,6 +238,10 @@ export default function ProductsPage() {
 
   function fieldError(key: string): string | undefined {
     return fieldErrors[key]?.[0]
+  }
+
+  function confirmDelete() {
+    if (deleteTarget) void handleDelete(deleteTarget)
   }
 
   return (
@@ -422,11 +427,7 @@ export default function ProductsPage() {
             </div>
           </div>
 
-          {formError && (
-            <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {formError}
-            </div>
-          )}
+          <ErrorAlert message={formError} />
 
           <div className="flex gap-2">
             <Button type="submit" disabled={saving}>
@@ -440,11 +441,7 @@ export default function ProductsPage() {
         </form>
       )}
 
-      {actionError && (
-        <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {actionError}
-        </div>
-      )}
+      <ErrorAlert message={actionError} />
 
       <div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
         {loading ? (
@@ -504,7 +501,7 @@ export default function ProductsPage() {
                         <Button
                           variant="destructive"
                           size="icon-sm"
-                          onClick={() => void handleDelete(product)}
+                          onClick={() => setDeleteTarget(product)}
                           disabled={deletingId === product.id}
                           aria-label={`Hapus ${product.name}`}
                         >
@@ -535,6 +532,17 @@ export default function ProductsPage() {
           </Button>
         </div>
       )}
+
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null)
+        }}
+        title="Hapus produk?"
+        description={`Produk "${deleteTarget?.name ?? ""}" akan dihapus permanen.`}
+        confirmLabel="Hapus"
+        onConfirm={confirmDelete}
+      />
     </div>
   )
 }
